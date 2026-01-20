@@ -13,7 +13,7 @@ Install
     python -m pip install PySide6 kreuzberg pymupdf pillow openpyxl
 
 Run
-    python hybrid_keyword_workbench.py
+    python gui_keyword_finder_3.3_cache_wholeword_nav.py
 
 Export
 - CSV / XLSX include page & bbox for PDF hits, and line_no for non-PDF hits.
