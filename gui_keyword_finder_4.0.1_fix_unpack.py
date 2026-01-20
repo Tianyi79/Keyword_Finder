@@ -16,10 +16,10 @@ Install
     python -m pip install PySide6 kreuzberg pymupdf pillow openpyxl
 
 Run
-    python gui_keyword_finder_4.0_full_improvements.py
+    python gui_keyword_finder_4.0.1_fix_unpack.py
 
 Portable mode (stores config/cache/logs next to the script)
-    python gui_keyword_finder_4.0_full_improvements.py --portable
+    python gui_keyword_finder_4.0.1_fix_unpack.py --portable
 """
 
 from __future__ import annotations
