@@ -37,6 +37,7 @@ python -m PyInstaller keyword_finder_onedir.spec
 - `requirements.txt` - Dependencies
 - `keyword_finder_onedir.spec` - PyInstaller config (onedir)
 - `build_onedir.sh` / `build_onedir.bat` - Build scripts
+- `keywordfinder.ico` - executable's icon
 
 ## Troubleshooting:
 - Python 3.10+ is recommended
