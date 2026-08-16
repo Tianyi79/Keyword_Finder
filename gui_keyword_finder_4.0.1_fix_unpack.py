@@ -1,24 +1,163 @@
-"""GUI Keyword Finder 4.0 (Full improvements)
+"""GUI Keyword Finder 4.0 - Local Document Search Workbench
 
-This is a single-file, local-first document keyword workbench.
+A local-first PySide6 desktop application for searching multiple documents,
+reviewing structured hits, previewing positioned PDF matches, saving selected
+quotes, and exporting results. Searches run in a background QThread so the UI
+remains responsive.
 
-What's new vs 3.9 (high-level):
-1) Non-blocking search + progress bar + Cancel
-2) Result views: Hit view (raw) + Page view (grouped)
-3) Search modes: Plain/Phrase, Regex (best-effort for PDF), Fuzzy (stdlib)
-4) Continue Reading: optional SumatraPDF page-jump on Windows
-5) Preview: Ctrl+Wheel zoom + Fit Width/Page + smoother scroll behavior
-6) Keywords: Import/Export + clean template/prompt helpers
-7) Disk cache: extracted text + PDF line index (keyed by mtime/size)
-8) Engineering: config.json + logging + --portable mode
+Supported input paths
+---------------------
+PDF (.pdf)
+    Opened directly with PyMuPDF. Every page is scanned. PDF words, line
+    reconstruction data, and bounding boxes are used for exact-word results,
+    context, and highlighted page previews.
+
+CSV (.csv)
+    Read directly with Python's csv module. The reader tries utf-8-sig,
+    utf-8, gb18030, and latin-1 in that order.
+
+Excel (.xlsx, .xlsm, .xltx, .xltm)
+    Read directly with openpyxl in read-only, data-only mode. This searches
+    stored cell values and cached formula results, not formula expressions.
+
+Other non-PDF files (for example .docx, .pptx, or legacy formats)
+    Extracted as text through Kreuzberg when Kreuzberg is installed. PDF,
+    CSV, and supported Excel searches do not require Kreuzberg.
+
+How searchable content is structured
+------------------------------------
+PDF
+    Results store a 1-based page number and, when available, a PDF rectangle
+    (x0, y0, x1, y1). Word lines are reconstructed from PyMuPDF's block and
+    line identifiers to create snippets and nearby context.
+
+CSV and Excel
+    Each physical row becomes one searchable string. Empty cells are skipped
+    and remaining values are joined with " | ". Results store a 1-based row
+    number. Excel worksheet names and cell coordinates are not stored, so rows
+    with the same number on different worksheets cannot be distinguished in
+    exported results and may be grouped together in Page view.
+
+Kreuzberg-extracted files
+    Extracted content is split into lines. Results store a 1-based line number,
+    the matching line as the snippet, and one neighboring line on each side as
+    context.
+
+Matching modes
+--------------
+Plain
+    CSV, Excel, and extracted text produce one Hit for every accepted literal
+    occurrence. PDFs use a cached word lookup for ASCII whole-word searches;
+    other PDF literals and phrases use PyMuPDF page.search_for().
+
+Regex
+    CSV, Excel, and extracted text use Python regular expressions and produce
+    one Hit per accepted match. PDFs run the expression against extracted page
+    text, then try to locate the detected literal with page.search_for() for a
+    best-effort highlight rectangle. PDF regex context is limited to the
+    detected match text.
+
+Fuzzy
+    CSV, Excel, and Kreuzberg-extracted text compare the keyword with individual
+    tokens using difflib.SequenceMatcher and the configured threshold. At most
+    one best fuzzy token is emitted per keyword for each source row or line.
+    PDF fuzzy mode currently follows the normal literal PDF search path; it does
+    not apply token-similarity matching to PDF words.
+
+Case and whole-word behavior
+----------------------------
+Case sensitivity is applied explicitly to CSV, Excel, extracted text, and the
+cached PDF word lookup. PDF searches routed through page.search_for() use
+PyMuPDF's own search semantics. Whole-word enforcement applies to ASCII
+letter/digit/underscore keywords. When enabled, the detected ASCII token must
+equal the keyword, so approximate fuzzy matches can be rejected even when their
+similarity score passes the threshold.
+
+Results and views
+-----------------
+Each Hit records:
+    file path, file type, keyword, detected text, page/line/row location,
+    optional PDF rectangle, snippet, and context.
+
+Hit view
+    Displays one table row for every Hit.
+
+Page view
+    Groups Hits by file and stored document location. For PDFs this is normally
+    the page number; for extracted text it is the line number; for CSV/Excel it
+    is the row number. Page view shows a representative Hit and the number of
+    grouped matches.
+
+PDF preview and navigation
+--------------------------
+The separate Preview window can:
+    - render a PDF page and outline the selected Hit rectangle;
+    - zoom with buttons or Ctrl+Wheel, fit width, or fit page;
+    - show reconstructed context and full extracted page text;
+    - move to the previous or next visible result;
+    - open a PDF at the selected page in SumatraPDF on Windows when available,
+      otherwise through the system viewer.
+
+Non-PDF Hits show text in the Preview window but do not have a rendered page
+image. A PDF regex Hit without a recovered rectangle also has no image highlight.
+
+Clips and exports
+-----------------
+Text selected in the Preview context or page-text panel can be saved as a Clip.
+A Clip stores its creation time, source path/type, page/line/row location,
+keyword, detected text, selected text, and an optional note field.
+
+Exports:
+    - search results as CSV or XLSX;
+    - clips as Markdown or CSV;
+    - keywords as plain text;
+    - a reusable AI keyword-generation prompt as plain text.
+
+Caching and runtime behavior
+----------------------------
+PDF pages are scanned sequentially in the worker thread. Word lists, line
+indexes, and case-specific exact-word lookups are built and cached when the
+active search path needs them. Kreuzberg-extracted text is also cached. Direct
+CSV and Excel row data is reread for every search and is not stored in DiskCache.
+
+DiskCache stores gzip-compressed pickle files. Cache keys include the resolved
+source path, integer modification time, file size, and a cache-purpose suffix.
+The configured cache limit applies to cache entries, which are trimmed by most
+recent modification time. The Preview window also maintains small in-memory LRU
+caches for open PDF documents and rendered page images.
+
+Keyword workflow
+----------------
+Keywords may be entered one per line or separated by commas. Empty values are
+removed and duplicates are discarded according to the current case-sensitivity
+setting. Keyword lists can be imported from text or from all non-empty CSV cells.
+
+Configuration and local data
+----------------------------
+Normal mode stores config.json, cache files, and rotating logs under:
+    ~/.keyword_finder/
+
+Portable mode stores them beside the script under:
+    .keyword_finder_data/
+
+Default search settings are case-sensitive plain matching, ASCII whole-word
+matching enabled, fuzzy threshold 0.86, Hit view, disk caching enabled, and PDF
+preview zoom 2.0.
 
 Install
-    python -m pip install PySide6 kreuzberg pymupdf pillow openpyxl
+-------
+Core PDF/CSV/Excel functionality:
+    python -m pip install PySide6 pymupdf pillow openpyxl
+
+Optional extraction for other document formats:
+    python -m pip install kreuzberg
 
 Run
+---
     python gui_keyword_finder_4.0.1_fix_unpack.py
 
-Portable mode (stores config/cache/logs next to the script)
+Portable mode
+-------------
     python gui_keyword_finder_4.0.1_fix_unpack.py --portable
 """
 
@@ -41,9 +180,9 @@ from typing import Dict, List, Optional, Tuple, Any
 
 import fitz  # PyMuPDF
 from PIL import Image, ImageQt, ImageDraw
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 
-# kreuzberg is optional: if missing, the app will still work for PDFs.
+# Kreuzberg is optional: PDF, CSV, and supported Excel searches work without it.
 try:
     from kreuzberg import batch_extract_files_sync, ExtractionConfig
     KREUZBERG_AVAILABLE = True
@@ -93,19 +232,21 @@ class Hit:
     keyword: str
     detected_word: str
     page: Optional[int]  # PDF only (1-based)
-    line_no: Optional[int]  # non-PDF (1-based)
+    line_no: Optional[int]  # text-like non-PDF files (1-based)
+    row_no: Optional[int]  # spreadsheet / CSV row number (1-based)
     rect: Optional[Tuple[float, float, float, float]]  # PDF bbox in page coords
     snippet: str
     context: str
 
 
 @dataclass
-class Clip:
+class Clip: 
     created_at: str
     file_path: str
     file_type: str
     page: Optional[int]
     line_no: Optional[int]
+    row_no: Optional[int]
     keyword: str
     detected_word: str
     selected_text: str
@@ -305,6 +446,37 @@ def detect_token(line: str, kw: str) -> str:
             return tok
     return kw
 
+def find_plain_occurrences(line: str, kw: str, case_sensitive: bool) -> List[Tuple[int, int, str]]:
+    if not line or not kw:
+        return []
+    hay = line if case_sensitive else line.lower()
+    needle = kw if case_sensitive else kw.lower()
+    out: List[Tuple[int, int, str]] = []
+    start = 0
+    while True:
+        idx = hay.find(needle, start)
+        if idx < 0:
+            break
+        end = idx + len(kw)
+        token = kw
+        for m in _word_re.finditer(line):
+            s, e, tok = m.start(), m.end(), m.group(0)
+            if s <= idx < e or s < end <= e or (idx <= s and e <= end):
+                token = tok
+                break
+        out.append((idx, end, token))
+        start = idx + max(1, len(needle))
+    return out
+
+def row_values_to_text(values: List[Any]) -> str:
+    parts: List[str] = []
+    for v in values:
+        if v is None:
+            continue
+        s = str(v).strip()
+        if s:
+            parts.append(s)
+    return " | ".join(parts)
 
 def nonpdf_context(lines: List[str], line_no_1based: int, window: int = 1) -> str:
     if not lines:
@@ -319,9 +491,9 @@ def nonpdf_context(lines: List[str], line_no_1based: int, window: int = 1) -> st
     return "\n".join(out).strip()
 
 
-def build_line_index(words) -> Tuple[Dict[Tuple[int, int], str], List[Tuple[int, int]]]:
+def build_line_index(words) -> Tuple[Dict[Tuple[int, int], str], List[Tuple[int, int]], Dict[Tuple[int, int], int]]:
     if not words:
-        return {}, []
+        return {}, [], {}
     tmp: Dict[Tuple[int, int], List[Tuple[int, float, float, str]]] = {}
     line_pos: Dict[Tuple[int, int], Tuple[float, float]] = {}
     for w in words:
@@ -343,22 +515,32 @@ def build_line_index(words) -> Tuple[Dict[Tuple[int, int], str], List[Tuple[int,
         line_text.keys(),
         key=lambda k: (line_pos.get(k, (1e9, 1e9))[0], line_pos.get(k, (1e9, 1e9))[1], k[0], k[1]),
     )
-    return line_text, ordered_lines
+    line_index_map = {k: i for i, k in enumerate(ordered_lines)}
+    return line_text, ordered_lines, line_index_map
 
+def build_pdf_word_lookup(words, case_sensitive: bool) -> Dict[str, List[Tuple[str, int, int, Tuple[float, float, float, float]]]]:
+    lookup: Dict[str, List[Tuple[str, int, int, Tuple[float, float, float, float]]]] = {}
+    if not words:
+        return lookup
+    for w in words:
+        if len(w) < 8:
+            continue
+        x0, y0, x1, y1, txt, blk, ln = w[0], w[1], w[2], w[3], str(w[4]), int(w[5]), int(w[6])
+        key = txt if case_sensitive else txt.lower()
+        lookup.setdefault(key, []).append((txt, blk, ln, (float(x0), float(y0), float(x1), float(y1))))
+    return lookup
 
 def context_from_line_key(
     line_text: Dict[Tuple[int, int], str],
     ordered_lines: List[Tuple[int, int]],
+    line_index_map: Dict[Tuple[int, int], int],
     key: Tuple[int, int],
     window: int = 1,
 ) -> str:
     if not line_text or not ordered_lines:
         return ""
-    if key not in line_text:
-        return ""
-    try:
-        idx = ordered_lines.index(key)
-    except ValueError:
+    idx = line_index_map.get(key)
+    if idx is None:
         return ""
     start = max(0, idx - window)
     end = min(len(ordered_lines), idx + window + 1)
@@ -369,6 +551,22 @@ def context_from_line_key(
         out.append(prefix + line_text.get(k, ""))
     return "\n".join(out).strip()
 
+def normalize_line_index_cache(li):
+    if not li:
+        return {}, [], {}
+    if isinstance(li, tuple):
+        if len(li) == 3:
+            line_text, ordered_lines, line_index_map = li
+            if line_index_map is None:
+                line_index_map = {k: i for i, k in enumerate(ordered_lines or [])}
+            return line_text or {}, ordered_lines or [], line_index_map or {}
+        if len(li) == 2:
+            line_text, ordered_lines = li
+            line_text = line_text or {}
+            ordered_lines = ordered_lines or []
+            line_index_map = {k: i for i, k in enumerate(ordered_lines)}
+            return line_text, ordered_lines, line_index_map
+    return {}, [], {}
 
 def best_word_entry_from_rect(words, rect: fitz.Rect) -> Optional[Tuple[str, int, int]]:
     if not words:
@@ -938,6 +1136,8 @@ class ClipsDialog(QDialog):
             where = ""
             if c.file_type == "PDF" and c.page is not None:
                 where = f"p.{c.page}"
+            elif c.row_no is not None:
+                where = f"row.{c.row_no}"    
             elif c.line_no is not None:
                 where = f"ln.{c.line_no}"
             preview = (c.selected_text or "").replace("\n", " ").strip()
@@ -966,6 +1166,8 @@ class ClipsDialog(QDialog):
         where = ""
         if c.file_type == "PDF" and c.page is not None:
             where = f"Page {c.page}"
+        elif c.row_no is not None:
+            where = f"Row {c.row_no}"
         elif c.line_no is not None:
             where = f"Line {c.line_no}"
         self.detail.setPlainText(
@@ -1010,6 +1212,132 @@ class SearchWorker(QThread):
             self.cancelled.emit()
             return True
         return False
+    def _append_sheet_hits(self, hits: List[Hit], fpath: str, file_type: str, row_no: int, row_text: str, keyword_entries: List[Dict[str, Any]]):
+        if not row_text:
+            return
+
+        lines_for_context = [row_text]
+        for entry in keyword_entries:
+            kw = entry["kw"]
+            kw_cmp = entry["kw_cmp"]
+
+            if self.cfg.search_mode == "regex":
+                try:
+                    pat = re.compile(kw, 0 if self.cfg.case_sensitive else re.IGNORECASE)
+                except re.error:
+                    continue
+                matches = list(pat.finditer(row_text))
+                if not matches:
+                    continue
+                ctx = nonpdf_context(lines_for_context, 1, window=0)
+                for m in matches:
+                    detected = (m.group(0) or kw).strip()
+                    if not _whole_word_accept(kw, detected, self.cfg.case_sensitive, self.cfg.whole_word):
+                        continue
+                    hits.append(
+                        Hit(
+                            file_path=fpath,
+                            file_type=file_type,
+                            keyword=kw,
+                            detected_word=detected,
+                            page=None,
+                            line_no=None,
+                            row_no=row_no,
+                            rect=None,
+                            snippet=row_text,
+                            context=ctx,
+                        )
+                    )
+                continue
+
+            if self.cfg.search_mode == "fuzzy":
+                line_tokens = [t.group(0) for t in _word_re.finditer(row_text)]
+                line_tokens_cmp = [tok if self.cfg.case_sensitive else tok.lower() for tok in line_tokens]
+
+                best_tok = ""
+                best_sc = 0.0
+                kw_len = len(kw_cmp)
+
+                for tok, tok_cmp in zip(line_tokens, line_tokens_cmp):
+                    if abs(len(tok_cmp) - kw_len) > max(2, int(kw_len * 0.4)):
+                        continue
+                    sc = seq_ratio(kw_cmp, tok_cmp)
+                    if sc > best_sc:
+                        best_sc, best_tok = sc, tok
+
+                if best_sc < float(self.cfg.fuzzy_threshold):
+                    continue
+                detected = best_tok or kw
+                if not _whole_word_accept(kw, detected, self.cfg.case_sensitive, self.cfg.whole_word):
+                    continue
+
+                ctx = nonpdf_context(lines_for_context, 1, window=0)
+                hits.append(
+                    Hit(
+                        file_path=fpath,
+                        file_type=file_type,
+                        keyword=kw,
+                        detected_word=detected,
+                        page=None,
+                        line_no=None,
+                        row_no=row_no,
+                        rect=None,
+                        snippet=row_text,
+                        context=ctx,
+                    )
+                )
+                continue
+
+            occurrences = find_plain_occurrences(row_text, kw, self.cfg.case_sensitive)
+            if not occurrences:
+                continue
+
+            ctx = nonpdf_context(lines_for_context, 1, window=0)
+            for _start, _end, detected in occurrences:
+                if not _whole_word_accept(kw, detected, self.cfg.case_sensitive, self.cfg.whole_word):
+                    continue
+                hits.append(
+                    Hit(
+                        file_path=fpath,
+                        file_type=file_type,
+                        keyword=kw,
+                        detected_word=detected or kw,
+                        page=None,
+                        line_no=None,
+                        row_no=row_no,
+                        rect=None,
+                        snippet=row_text,
+                        context=ctx,
+                    )
+                )
+
+    def _search_csv_file(self, fpath: str, hits: List[Hit], keyword_entries: List[Dict[str, Any]]):
+        encodings = ["utf-8-sig", "utf-8", "gb18030", "latin-1"]
+        last_err = None
+        for enc in encodings:
+            try:
+                with open(fpath, "r", encoding=enc, newline="") as fp:
+                    reader = csv.reader(fp)
+                    for row_no, row in enumerate(reader, 1):
+                        row_text = row_values_to_text(row)
+                        if row_text:
+                            self._append_sheet_hits(hits, fpath, "CSV", row_no, row_text, keyword_entries)
+                return
+            except Exception as e:
+                last_err = e
+        if last_err is not None:
+            raise last_err
+
+    def _search_excel_file(self, fpath: str, hits: List[Hit], keyword_entries: List[Dict[str, Any]]):
+        wb = load_workbook(fpath, read_only=True, data_only=True)
+        try:
+            for ws in wb.worksheets:
+                for row_no, row in enumerate(ws.iter_rows(values_only=True), 1):
+                    row_text = row_values_to_text(list(row))
+                    if row_text:
+                        self._append_sheet_hits(hits, fpath, "XLSX", row_no, row_text, keyword_entries)
+        finally:
+            wb.close()
 
     def run(self):
         try:
@@ -1019,14 +1347,36 @@ class SearchWorker(QThread):
             if not self.keywords:
                 self.finished_err.emit("No keywords provided.")
                 return
+            keyword_entries = []
+            for kw in self.keywords:
+                if not kw:
+                    continue
+                keyword_entries.append(
+                    {
+                        "kw": kw,
+                        "kw_cmp": kw if self.cfg.case_sensitive else kw.lower(),
+                        "is_ascii_word": _is_ascii_word(kw),
+                    }
+                )
+            if not keyword_entries:
+                self.finished_err.emit("No valid keywords provided.")
+                return
 
             pdfs = [f for f in self.files if Path(f).suffix.lower() == ".pdf"]
-            others = [f for f in self.files if Path(f).suffix.lower() != ".pdf"]
+            spreadsheets = [
+                f for f in self.files
+                if Path(f).suffix.lower() in {".csv", ".xlsx", ".xlsm", ".xltx", ".xltm"}
+            ]
+            others = [
+                f for f in self.files
+                if Path(f).suffix.lower() != ".pdf"
+                and Path(f).suffix.lower() not in {".csv", ".xlsx", ".xlsm", ".xltx", ".xltm"}
+            ]
 
             hits: List[Hit] = []
 
             # progress by file
-            total_files = len(pdfs) + len(others)
+            total_files = len(pdfs) + len(spreadsheets) + len(others)
             self.progress_range.emit(0, max(1, total_files))
             done_files = 0
 
@@ -1054,10 +1404,16 @@ class SearchWorker(QThread):
                         return
 
                     page = doc.load_page(pno)
-                    # do the search first; build heavy line index only if there are hits
-                    for kw in self.keywords:
-                        if not kw:
-                            continue
+                    page_text = None
+                    words = None
+                    line_text = None
+                    ordered_lines = None
+                    line_index_map = None
+                    pdf_lookup = None
+
+                    # do the search first; build heavier page structures only when needed
+                    for entry in keyword_entries:
+                        kw = entry["kw"]
 
                         if self.cfg.search_mode == "regex":
                             # best-effort regex on extracted page text (no true bbox guarantee)
@@ -1076,10 +1432,10 @@ class SearchWorker(QThread):
                                 li = self.cache.get(fpath, extra=f"pdf_idx_{pno}")
                                 if li is None:
                                     words = page.get_text("words") or []
-                                    line_text, ordered_lines = build_line_index(words)
-                                    li = (line_text, ordered_lines)
+                                    line_text, ordered_lines, line_index_map = build_line_index(words)
+                                    li = (line_text, ordered_lines, line_index_map)
                                     self.cache.set(fpath, extra=f"pdf_idx_{pno}", value=li)
-                                line_text, ordered_lines = li
+                                line_text, ordered_lines, line_index_map = normalize_line_index_cache(li)
                                 snippet = detected
                                 ctx = detected
                                 hits.append(
@@ -1090,61 +1446,126 @@ class SearchWorker(QThread):
                                         detected_word=detected or kw,
                                         page=pno + 1,
                                         line_no=None,
+                                        row_no=None,
                                         rect=rect_tuple,
                                         snippet=snippet,
                                         context=ctx,
                                     )
                                 )
                         else:
-                            rects = page.search_for(kw, flags=fitz.TEXTFLAGS_SEARCH)
-                            if not rects:
-                                continue
-                            # build words + line index once per page when needed
-                            # build words + line index once per page when needed
-                            words = self.cache.get(fpath, extra=f"pdf_words_{pno}")
-                            li = self.cache.get(fpath, extra=f"pdf_idx_{pno}")
-                            if words is None or li is None:
-                                words = page.get_text("words") or []
-                                line_text, ordered_lines = build_line_index(words)
-                                li = (line_text, ordered_lines)
-                                self.cache.set(fpath, extra=f"pdf_words_{pno}", value=words)
-                                self.cache.set(fpath, extra=f"pdf_idx_{pno}", value=li)
-                            else:
-                                line_text, ordered_lines = li
+                            use_word_lookup = self.cfg.whole_word and entry["is_ascii_word"]
 
-                            for r in rects:
-                                best = best_word_entry_from_rect(words, r)
-                                if best is None:
-                                    detected, blk, ln = kw, -1, -1
-                                    snippet = ""
-                                    ctx = ""
+                            if use_word_lookup:
+                                if words is None:
+                                    words = self.cache.get(fpath, extra=f"pdf_words_{pno}")
+                                li = None if line_text is not None else self.cache.get(fpath, extra=f"pdf_idx_{pno}")
+                                lookup_extra = f"pdf_lookup_cs_{int(self.cfg.case_sensitive)}_{pno}"
+                                if pdf_lookup is None:
+                                    pdf_lookup = self.cache.get(fpath, extra=lookup_extra)
+
+                                if words is None or li is None or pdf_lookup is None:
+                                    if words is None:
+                                        words = page.get_text("words") or []
+                                        self.cache.set(fpath, extra=f"pdf_words_{pno}", value=words)
+                                    line_text, ordered_lines, line_index_map = build_line_index(words)
+                                    li = (line_text, ordered_lines, line_index_map)
+                                    self.cache.set(fpath, extra=f"pdf_idx_{pno}", value=li)
+                                    pdf_lookup = build_pdf_word_lookup(words, self.cfg.case_sensitive)
+                                    self.cache.set(fpath, extra=lookup_extra, value=pdf_lookup)
                                 else:
-                                    detected, blk, ln = best
-                                    snippet = line_text.get((blk, ln), "")
-                                    ctx = context_from_line_key(line_text, ordered_lines, (blk, ln), window=1)
+                                    line_text, ordered_lines, line_index_map = normalize_line_index_cache(li)
 
-                                if not _whole_word_accept(kw, detected, self.cfg.case_sensitive, self.cfg.whole_word):
+                                lookup_key = entry["kw_cmp"]
+                                matches = pdf_lookup.get(lookup_key, [])
+                                if not matches:
                                     continue
 
-                                hits.append(
-                                    Hit(
-                                        file_path=fpath,
-                                        file_type="PDF",
-                                        keyword=kw,
-                                        detected_word=detected or kw,
-                                        page=pno + 1,
-                                        line_no=None,
-                                        rect=(r.x0, r.y0, r.x1, r.y1),
-                                        snippet=snippet,
-                                        context=ctx or snippet,
+                                for detected, blk, ln, rect_tuple in matches:
+                                    snippet = line_text.get((blk, ln), "")
+                                    ctx = context_from_line_key(line_text, ordered_lines, line_index_map, (blk, ln), window=1)
+                                    hits.append(
+                                        Hit(
+                                            file_path=fpath,
+                                            file_type="PDF",
+                                            keyword=kw,
+                                            detected_word=detected or kw,
+                                            page=pno + 1,
+                                            line_no=None,
+                                            row_no=None,
+                                            rect=rect_tuple,
+                                            snippet=snippet,
+                                            context=ctx or snippet,
+                                        )
                                     )
-                                )
+                            else:
+                                rects = page.search_for(kw, flags=fitz.TEXTFLAGS_SEARCH)
+                                if not rects:
+                                    continue
+
+                                if words is None:
+                                    words = self.cache.get(fpath, extra=f"pdf_words_{pno}")
+                                li = None if line_text is not None else self.cache.get(fpath, extra=f"pdf_idx_{pno}")
+                                if words is None or li is None:
+                                    if words is None:
+                                        words = page.get_text("words") or []
+                                        self.cache.set(fpath, extra=f"pdf_words_{pno}", value=words)
+                                    line_text, ordered_lines, line_index_map = build_line_index(words)
+                                    li = (line_text, ordered_lines, line_index_map)
+                                    self.cache.set(fpath, extra=f"pdf_idx_{pno}", value=li)
+                                else:
+                                    line_text, ordered_lines, line_index_map = normalize_line_index_cache(li)
+
+                                for r in rects:
+                                    best = best_word_entry_from_rect(words, r)
+                                    if best is None:
+                                        detected, blk, ln = kw, -1, -1
+                                        snippet = ""
+                                        ctx = ""
+                                    else:
+                                        detected, blk, ln = best
+                                        snippet = line_text.get((blk, ln), "")
+                                        ctx = context_from_line_key(line_text, ordered_lines, line_index_map, (blk, ln), window=1)
+
+                                    if not _whole_word_accept(kw, detected, self.cfg.case_sensitive, self.cfg.whole_word):
+                                        continue
+
+                                    hits.append(
+                                        Hit(
+                                            file_path=fpath,
+                                            file_type="PDF",
+                                            keyword=kw,
+                                            detected_word=detected or kw,
+                                            page=pno + 1,
+                                            row_no=None,
+                                            line_no=None,
+                                            rect=(r.x0, r.y0, r.x1, r.y1),
+                                            snippet=snippet,
+                                            context=ctx or snippet,
+                                        )
+                                    )
 
                 try:
                     doc.close()
                 except Exception:
                     pass
+            # --- Spreadsheet / CSV search ---
+            if spreadsheets:
+                for fpath in spreadsheets:
+                    if self._check_stop():
+                        return
+                    done_files += 1
+                    self.progress_value.emit(min(done_files, total_files))
+                    self.progress_text.emit(f"Sheet: {Path(fpath).name} ({done_files}/{total_files})")
 
+                    try:
+                        suffix = Path(fpath).suffix.lower()
+                        if suffix == ".csv":
+                            self._search_csv_file(fpath, hits, keyword_entries)
+                        else:
+                            self._search_excel_file(fpath, hits, keyword_entries)
+                    except Exception as e:
+                        self.progress_text.emit(f"Failed to read sheet: {Path(fpath).name} — {e}")
+                        continue            
             # --- Non-PDF search ---
             if others:
                 if not KREUZBERG_AVAILABLE:
@@ -1192,55 +1613,106 @@ class SearchWorker(QThread):
                         if not line:
                             continue
 
-                        for kw in self.keywords:
-                            if not kw:
-                                continue
+                        line_cmp = line if self.cfg.case_sensitive else line.lower()
+                        line_tokens = None
+                        line_tokens_cmp = None
+
+                        for entry in keyword_entries:
+                            kw = entry["kw"]
+                            kw_cmp = entry["kw_cmp"]
                             # match mode
                             if self.cfg.search_mode == "regex":
                                 try:
                                     pat = re.compile(kw, 0 if self.cfg.case_sensitive else re.IGNORECASE)
                                 except re.error:
                                     continue
-                                m = pat.search(line)
-                                if not m:
+                                matches = list(pat.finditer(line))
+                                if not matches:
                                     continue
-                                detected = (m.group(0) or kw).strip()
+                                ctx = nonpdf_context(lines, ln, window=1)
+                                for m in matches:
+                                    detected = (m.group(0) or kw).strip()
+                                    if not _whole_word_accept(kw, detected, self.cfg.case_sensitive, self.cfg.whole_word):
+                                        continue
+                                    hits.append(
+                                        Hit(
+                                            file_path=fpath,
+                                            file_type="DOC/PPT/XLS/…",
+                                            keyword=kw,
+                                            detected_word=detected,
+                                            page=None,
+                                            line_no=ln,
+                                            row_no=None,
+                                            rect=None,
+                                            snippet=line,
+                                            context=ctx,
+                                        )
+                                    )
+                                continue
                             elif self.cfg.search_mode == "fuzzy":
-                                # token fuzzy against tokens in line
-                                tokens = [t.group(0) for t in _word_re.finditer(line)]
+                                # tokenize once per line
+                                if line_tokens is None:
+                                    line_tokens = [t.group(0) for t in _word_re.finditer(line)]
+                                    line_tokens_cmp = [tok if self.cfg.case_sensitive else tok.lower() for tok in line_tokens]
+
                                 best_tok = ""
                                 best_sc = 0.0
-                                for tok in tokens:
-                                    sc = seq_ratio(kw.lower(), tok.lower())
+                                kw_len = len(kw_cmp)
+
+                                for tok, tok_cmp in zip(line_tokens, line_tokens_cmp or []):
+                                    # cheap prefilter before SequenceMatcher
+                                    if abs(len(tok_cmp) - kw_len) > max(2, int(kw_len * 0.4)):
+                                        continue
+                                    sc = seq_ratio(kw_cmp, tok_cmp)
                                     if sc > best_sc:
                                         best_sc, best_tok = sc, tok
+
                                 if best_sc < float(self.cfg.fuzzy_threshold):
                                     continue
                                 detected = best_tok or kw
-                            else:
-                                hay = line if self.cfg.case_sensitive else line.lower()
-                                needle = kw if self.cfg.case_sensitive else kw.lower()
-                                if needle not in hay:
+
+                                if not _whole_word_accept(kw, detected, self.cfg.case_sensitive, self.cfg.whole_word):
                                     continue
-                                detected = detect_token(line, kw) or kw
 
-                            if not _whole_word_accept(kw, detected, self.cfg.case_sensitive, self.cfg.whole_word):
-                                continue
-
-                            ctx = nonpdf_context(lines, ln, window=1)
-                            hits.append(
-                                Hit(
-                                    file_path=fpath,
-                                    file_type="DOC/PPT/XLS/…",
-                                    keyword=kw,
-                                    detected_word=detected,
-                                    page=None,
-                                    line_no=ln,
-                                    rect=None,
-                                    snippet=line,
-                                    context=ctx,
+                                ctx = nonpdf_context(lines, ln, window=1)
+                                hits.append(
+                                    Hit(
+                                        file_path=fpath,
+                                        file_type="DOC/PPT/XLS/…",
+                                        keyword=kw,
+                                        detected_word=detected,
+                                        page=None,
+                                        line_no=ln,
+                                        row_no=None,
+                                        rect=None,
+                                        snippet=line,
+                                        context=ctx,
+                                    )
                                 )
-                            )
+                            else:
+                                occurrences = find_plain_occurrences(line, kw, self.cfg.case_sensitive)
+                                if not occurrences:
+                                    continue
+
+                                ctx = nonpdf_context(lines, ln, window=1)
+                                for _start, _end, detected in occurrences:
+                                    if not _whole_word_accept(kw, detected, self.cfg.case_sensitive, self.cfg.whole_word):
+                                        continue
+                                    hits.append(
+                                        Hit(
+                                            file_path=fpath,
+                                            file_type="DOC/PPT/XLS/…",
+                                            keyword=kw,
+                                            detected_word=detected or kw,
+                                            page=None,
+                                            line_no=ln,
+                                            row_no=None,
+                                            rect=None,
+                                            snippet=line,
+                                            context=ctx,
+                                        )
+                                    )
+                                continue
 
             self.progress_text.emit(f"Done. {len(hits)} hit(s).")
             self.finished_ok.emit(hits)
@@ -1313,8 +1785,8 @@ class KeywordFinderWindow(QMainWindow):
         # results
         g = QGroupBox("Results")
         gl = QVBoxLayout(g)
-        self.table = QTableWidget(0, 8)
-        self.table.setHorizontalHeaderLabels(["View", "Type", "File", "Keyword", "Detected", "Page", "Line", "Snippet"])
+        self.table = QTableWidget(0, 9)
+        self.table.setHorizontalHeaderLabels(["View", "Type", "File", "Keyword", "Detected", "Page", "Line", "Row", "Snippet"])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
@@ -1322,7 +1794,8 @@ class KeywordFinderWindow(QMainWindow):
         self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(7, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(8, QHeaderView.Stretch)
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(True)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -1629,19 +2102,26 @@ class KeywordFinderWindow(QMainWindow):
             return
 
         if self.cfg.results_view == "pages":
-            # group by file+page/line bucket (PDF pages, non-PDF lines)
-            groups: Dict[Tuple[str, str, Optional[int], Optional[int]], List[int]] = {}
+            groups: Dict[Tuple[str, str, Optional[int], Optional[int], Optional[int]], List[int]] = {}
             for i, h in enumerate(self.hits):
-                key = (h.file_path, h.file_type, h.page, h.line_no if h.file_type != "PDF" else None)
+                key = (
+                    h.file_path,
+                    h.file_type,
+                    h.page,
+                    h.line_no if h.row_no is None else None,
+                    h.row_no,
+                )
                 groups.setdefault(key, []).append(i)
+
             rows = list(groups.items())
             self.table.setRowCount(len(rows))
             for r, (key, idxs) in enumerate(rows):
-                fpath, ftype, page, line = key
+                fpath, ftype, page, line, row_no = key
                 rep = self.hits[idxs[0]]
                 keywords = sorted({self.hits[i].keyword for i in idxs})
                 detected = rep.detected_word
                 snippet = rep.snippet
+
                 self.table.setItem(r, 0, QTableWidgetItem("PAGE"))
                 self.table.setItem(r, 1, QTableWidgetItem(ftype))
                 self.table.setItem(r, 2, QTableWidgetItem(Path(fpath).name))
@@ -1649,7 +2129,8 @@ class KeywordFinderWindow(QMainWindow):
                 self.table.setItem(r, 4, QTableWidgetItem(detected))
                 self.table.setItem(r, 5, QTableWidgetItem("" if page is None else str(page)))
                 self.table.setItem(r, 6, QTableWidgetItem("" if line is None else str(line)))
-                self.table.setItem(r, 7, QTableWidgetItem(f"[{len(idxs)} hits] {snippet}"))
+                self.table.setItem(r, 7, QTableWidgetItem("" if row_no is None else str(row_no)))
+                self.table.setItem(r, 8, QTableWidgetItem(f"[{len(idxs)} hits] {snippet}"))
                 self._view_rows.append(idxs[0])
         else:
             self.table.setRowCount(len(self.hits))
@@ -1661,7 +2142,8 @@ class KeywordFinderWindow(QMainWindow):
                 self.table.setItem(i, 4, QTableWidgetItem(h.detected_word))
                 self.table.setItem(i, 5, QTableWidgetItem("" if h.page is None else str(h.page)))
                 self.table.setItem(i, 6, QTableWidgetItem("" if h.line_no is None else str(h.line_no)))
-                self.table.setItem(i, 7, QTableWidgetItem(h.snippet))
+                self.table.setItem(i, 7, QTableWidgetItem("" if h.row_no is None else str(h.row_no)))
+                self.table.setItem(i, 8, QTableWidgetItem(h.snippet))
                 self._view_rows.append(i)
 
         self._refresh_status(f"Done. {len(self.hits)} hit(s).")
@@ -1770,6 +2252,7 @@ class KeywordFinderWindow(QMainWindow):
                 file_type=hit.file_type,
                 page=hit.page,
                 line_no=hit.line_no,
+                row_no=hit.row_no,
                 keyword=hit.keyword,
                 detected_word=hit.detected_word,
                 selected_text=selected,
@@ -1805,6 +2288,8 @@ class KeywordFinderWindow(QMainWindow):
             where = ""
             if c.file_type == "PDF" and c.page is not None:
                 where = f"Page {c.page}"
+            elif c.row_no is not None:
+                where = f"Row {c.row_no}"
             elif c.line_no is not None:
                 where = f"Line {c.line_no}"
             lines.append(f"## {Path(c.file_path).name} — {where}\n")
@@ -1834,6 +2319,31 @@ class KeywordFinderWindow(QMainWindow):
                 w.writerow([c.created_at, c.file_path, c.file_type, c.page or "", c.line_no or "", c.keyword, c.detected_word, c.selected_text])
         QMessageBox.information(self, "Export", f"Saved:\n{out}")
 
+    def export_clips_csv(self):
+        if not self.clips:
+            QMessageBox.information(self, "Tip", "No clips to export.")
+            return
+        default = f"quote_clips_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        out, _ = QFileDialog.getSaveFileName(self, "Save CSV", default, "CSV (*.csv)")
+        if not out:
+            return
+        with open(out, "w", newline="", encoding="utf-8-sig") as f:
+            w = csv.writer(f)
+            w.writerow(["created_at", "file", "file_type", "page", "line_no", "row_no", "keyword", "detected_word", "selected_text"])
+            for c in self.clips:
+                w.writerow([
+                    c.created_at,
+                    c.file_path,
+                    c.file_type,
+                    c.page or "",
+                    c.line_no or "",
+                    c.row_no or "",
+                    c.keyword,
+                    c.detected_word,
+                    c.selected_text,
+                ])
+        QMessageBox.information(self, "Export", f"Saved:\n{out}")
+
     def export_results_csv(self):
         if not self.hits:
             QMessageBox.information(self, "Tip", "No results to export.")
@@ -1844,12 +2354,25 @@ class KeywordFinderWindow(QMainWindow):
             return
         with open(out, "w", newline="", encoding="utf-8-sig") as f:
             w = csv.writer(f)
-            w.writerow(["file", "type", "keyword", "detected_word", "page", "line_no", "x0", "y0", "x1", "y1", "snippet"])
+            w.writerow(["file", "type", "keyword", "detected_word", "page", "line_no", "row_no", "x0", "y0", "x1", "y1", "snippet"])
             for h in self.hits:
                 x0 = y0 = x1 = y1 = ""
                 if h.rect:
                     x0, y0, x1, y1 = h.rect
-                w.writerow([h.file_path, h.file_type, h.keyword, h.detected_word, h.page or "", h.line_no or "", x0, y0, x1, y1, h.snippet])
+                w.writerow([
+                    h.file_path,
+                    h.file_type,
+                    h.keyword,
+                    h.detected_word,
+                    h.page or "",
+                    h.line_no or "",
+                    h.row_no or "",
+                    x0,
+                    y0,
+                    x1,
+                    y1,
+                    h.snippet,
+                ])
         QMessageBox.information(self, "Export", f"Saved:\n{out}")
 
     def export_results_xlsx(self):
@@ -1863,22 +2386,35 @@ class KeywordFinderWindow(QMainWindow):
         wb = Workbook()
         ws = wb.active
         ws.title = "results"
-        ws.append(["file", "type", "keyword", "detected_word", "page", "line_no", "x0", "y0", "x1", "y1", "snippet"])
+        ws.append(["file", "type", "keyword", "detected_word", "page", "line_no", "row_no", "x0", "y0", "x1", "y1", "snippet"])
         for h in self.hits:
             x0 = y0 = x1 = y1 = None
             if h.rect:
                 x0, y0, x1, y1 = h.rect
-            ws.append([h.file_path, h.file_type, h.keyword, h.detected_word, h.page, h.line_no, x0, y0, x1, y1, h.snippet])
+            ws.append([
+                h.file_path,
+                h.file_type,
+                h.keyword,
+                h.detected_word,
+                h.page,
+                h.line_no,
+                h.row_no,
+                x0,
+                y0,
+                x1,
+                y1,
+                h.snippet,
+            ])
         ws.column_dimensions["A"].width = 46
         ws.column_dimensions["B"].width = 14
         ws.column_dimensions["C"].width = 22
         ws.column_dimensions["D"].width = 22
         ws.column_dimensions["E"].width = 8
         ws.column_dimensions["F"].width = 8
-        ws.column_dimensions["K"].width = 90
+        ws.column_dimensions["G"].width = 8
+        ws.column_dimensions["L"].width = 90
         wb.save(out)
         QMessageBox.information(self, "Export", f"Saved:\n{out}")
-
 
 def main():
     portable = "--portable" in sys.argv
