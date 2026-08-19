@@ -219,6 +219,10 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QLineEdit,
     QFormLayout,
+    QSplitter,
+    QStackedWidget,
+    QTabWidget,
+    QSizePolicy,
 )
 
 
@@ -240,7 +244,7 @@ class Hit:
 
 
 @dataclass
-class Clip: 
+class Clip:
     created_at: str
     file_path: str
     file_type: str
@@ -806,11 +810,17 @@ class PreviewPopup(QDialog):
     request_prev_hit = Signal()
     request_next_hit = Signal()
 
-    def __init__(self, parent=None, zoom_default: float = 2.0):
+    def __init__(self, parent=None, zoom_default: float = 2.0, embedded: bool = False):
         super().__init__(parent)
+        self.embedded = bool(embedded)
         self.setWindowTitle("Preview")
-        self.setMinimumSize(980, 760)
-        self.setWindowFlag(Qt.Window)
+        if self.embedded:
+            self.setWindowFlag(Qt.Widget, True)
+            self.setMinimumSize(340, 520)
+            self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        else:
+            self.setMinimumSize(980, 760)
+            self.setWindowFlag(Qt.Window)
 
         self.current_hit: Optional[Hit] = None
         self.zoom: float = float(zoom_default)
@@ -828,32 +838,29 @@ class PreviewPopup(QDialog):
         self._resize_timer.setSingleShot(True)
         self._resize_timer.timeout.connect(self._rerender)
 
-        root = QWidget()
-        self.setLayout(QVBoxLayout())
-        self.layout().setContentsMargins(10, 10, 10, 10)
-        self.layout().addWidget(root)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(10, 10, 10, 10)
+        outer.setSpacing(8)
 
-        outer = QVBoxLayout(root)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(10)
-
-        # top controls
-        row = QHBoxLayout()
-        self.btn_continue = QPushButton("Continue reading")
+        heading_row = QHBoxLayout()
+        self.preview_title = QLabel("Preview")
+        self.preview_title.setStyleSheet("font-size: 17px; font-weight: 600;")
+        self.source_label = QLabel("Select a result to inspect it.")
+        self.source_label.setWordWrap(True)
+        heading_row.addWidget(self.preview_title)
+        heading_row.addStretch(1)
+        self.btn_continue = QPushButton("Open document")
         self.btn_continue.clicked.connect(lambda: self.request_continue_reading.emit())
-        self.btn_prev = QPushButton("◀ Prev")
+        self.btn_continue.setEnabled(False)
+        heading_row.addWidget(self.btn_continue)
+        outer.addLayout(heading_row)
+        outer.addWidget(self.source_label)
+
+        controls = QHBoxLayout()
+        self.btn_prev = QPushButton("Previous")
         self.btn_prev.clicked.connect(lambda: self.request_prev_hit.emit())
-        self.btn_next = QPushButton("Next ▶")
+        self.btn_next = QPushButton("Next")
         self.btn_next.clicked.connect(lambda: self.request_next_hit.emit())
-
-        row.addWidget(self.btn_continue)
-        row.addStretch(1)
-        row.addWidget(self.btn_prev)
-        row.addWidget(self.btn_next)
-        outer.addLayout(row)
-
-        # zoom controls
-        zrow = QHBoxLayout()
         self.btn_fit_w = QPushButton("Fit width")
         self.btn_fit_w.clicked.connect(self.fit_width)
         self.btn_fit_p = QPushButton("Fit page")
@@ -867,51 +874,64 @@ class PreviewPopup(QDialog):
         self.btn_zin = QPushButton("+")
         self.btn_zin.setShortcut(QKeySequence("Ctrl+="))
         self.btn_zin.clicked.connect(self.zoom_in)
-
-        zrow.addStretch(1)
-        zrow.addWidget(self.btn_fit_w)
-        zrow.addWidget(self.btn_fit_p)
-        zrow.addWidget(self.btn_zout)
-        zrow.addWidget(self.btn_zreset)
-        zrow.addWidget(self.btn_zin)
-        outer.addLayout(zrow)
+        controls.addWidget(self.btn_prev)
+        controls.addWidget(self.btn_next)
+        controls.addStretch(1)
+        controls.addWidget(self.btn_fit_w)
+        controls.addWidget(self.btn_fit_p)
+        controls.addWidget(self.btn_zout)
+        controls.addWidget(self.btn_zreset)
+        controls.addWidget(self.btn_zin)
+        outer.addLayout(controls)
 
         # preview group
         preview_group = QGroupBox("PDF page")
         pg = QVBoxLayout(preview_group)
-        self.preview_label = QLabel("Select a PDF hit to preview.")
-        self.preview_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
-        self.preview_label.setStyleSheet("background:#111;color:#ddd;padding:10px;")
+        self.preview_label = QLabel("Select a PDF result to preview its page.")
+        self.preview_label.setAlignment(Qt.AlignCenter)
+        self.preview_label.setWordWrap(True)
+        self.preview_label.setStyleSheet("background: palette(base); color: palette(text); padding: 12px;")
 
         self.preview_scroll = QScrollArea()
         self.preview_scroll.setWidgetResizable(False)
-        self.preview_scroll.setStyleSheet("QScrollArea { border: 1px solid rgba(0,0,0,0.15); }")
+        self.preview_scroll.setAlignment(Qt.AlignCenter)
         self.preview_scroll.setWidget(self.preview_label)
         pg.addWidget(self.preview_scroll, 1)
         outer.addWidget(preview_group, 1)
 
-        # bottom text boxes
-        ctx = QGroupBox("Context")
-        cl = QVBoxLayout(ctx)
+        self.detail_tabs = QTabWidget()
         self.context_box = QTextEdit()
         self.context_box.setReadOnly(True)
-        self.context_box.setMinimumHeight(120)
-        cl.addWidget(self.context_box)
-        outer.addWidget(ctx)
+        self.context_box.setPlaceholderText("Context for the selected result appears here.")
+        self.context_box.setAccessibleName("Result context")
+        self.detail_tabs.addTab(self.context_box, "Context")
 
-        txt = QGroupBox("Page text (select to clip)")
-        tl = QVBoxLayout(txt)
+        text_panel = QWidget()
+        text_layout = QVBoxLayout(text_panel)
+        text_layout.setContentsMargins(6, 6, 6, 6)
         top = QHBoxLayout()
+        top.addWidget(QLabel("Select text below, then save it as a clip."))
         top.addStretch(1)
         self.btn_save_clip = QPushButton("Save selection as clip")
         self.btn_save_clip.clicked.connect(lambda: self.request_save_clip.emit())
         top.addWidget(self.btn_save_clip)
-        tl.addLayout(top)
+        text_layout.addLayout(top)
         self.page_text_box = QTextEdit()
         self.page_text_box.setReadOnly(True)
-        self.page_text_box.setMinimumHeight(160)
-        tl.addWidget(self.page_text_box)
-        outer.addWidget(txt)
+        self.page_text_box.setAccessibleName("Full page text")
+        text_layout.addWidget(self.page_text_box)
+        self.detail_tabs.addTab(text_panel, "Page text and clips")
+        self.detail_tabs.setMinimumHeight(190)
+        outer.addWidget(self.detail_tabs)
+
+        self.btn_prev.setEnabled(False)
+        self.btn_next.setEnabled(False)
+        self.btn_fit_w.setEnabled(False)
+        self.btn_fit_p.setEnabled(False)
+        self.btn_zout.setEnabled(False)
+        self.btn_zreset.setEnabled(False)
+        self.btn_zin.setEnabled(False)
+        self.btn_save_clip.setEnabled(False)
 
         # Ctrl+Wheel zoom
         self._zoom_filter = _CtrlWheelZoomFilter(self._on_ctrl_wheel)
@@ -1036,6 +1056,29 @@ class PreviewPopup(QDialog):
     # ----- main -----
     def show_hit(self, hit: Hit):
         self.current_hit = hit
+        where = ""
+        if hit.page is not None:
+            where = f"Page {hit.page}"
+        elif hit.row_no is not None:
+            where = f"Row {hit.row_no}"
+        elif hit.line_no is not None:
+            where = f"Line {hit.line_no}"
+        parts = [Path(hit.file_path).name]
+        if where:
+            parts.append(where)
+        parts.append(hit.keyword)
+        self.source_label.setText(" · ".join(parts))
+        self.source_label.setToolTip(hit.file_path)
+        has_pdf_page = hit.file_type == "PDF" and hit.page is not None
+        self.btn_continue.setEnabled(has_pdf_page)
+        self.btn_prev.setEnabled(True)
+        self.btn_next.setEnabled(True)
+        self.btn_fit_w.setEnabled(has_pdf_page)
+        self.btn_fit_p.setEnabled(has_pdf_page)
+        self.btn_zout.setEnabled(has_pdf_page)
+        self.btn_zreset.setEnabled(has_pdf_page)
+        self.btn_zin.setEnabled(has_pdf_page)
+        self.btn_save_clip.setEnabled(True)
         self.context_box.setPlainText(hit.context or hit.snippet or "")
         if hit.file_type == "PDF" and hit.page is not None:
             try:
@@ -1047,7 +1090,10 @@ class PreviewPopup(QDialog):
                 self.page_text_box.setPlainText(hit.context or hit.snippet or "")
         else:
             self.page_text_box.setPlainText(hit.context or hit.snippet or "")
-        self._rerender()
+        if self.embedded and hit.file_type == "PDF" and hit.page is not None:
+            QTimer.singleShot(0, self.fit_width)
+        else:
+            self._rerender()
 
     def _rerender(self):
         hit = self.current_hit
@@ -1060,16 +1106,30 @@ class PreviewPopup(QDialog):
             return
         try:
             base = self._get_page_image_cached(hit.file_path, hit.page, self.zoom)
-            img = base.copy()
-            draw = ImageDraw.Draw(img)
+            img = base.convert("RGBA")
+            overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+            draw = ImageDraw.Draw(overlay)
             x0, y0, x1, y1 = hit.rect
             rr = fitz.Rect(x0 * self.zoom, y0 * self.zoom, x1 * self.zoom, y1 * self.zoom)
-            draw.rectangle([rr.x0, rr.y0, rr.x1, rr.y1], outline="red", width=max(2, int(3 * self.zoom)))
+            draw.rectangle(
+                [rr.x0, rr.y0, rr.x1, rr.y1],
+                fill=(255, 210, 70, 78),
+                outline=(190, 45, 40, 255),
+                width=max(2, int(2 * self.zoom)),
+            )
+            img = Image.alpha_composite(img, overlay).convert("RGB")
             qimg = ImageQt.ImageQt(img)
             pm = QPixmap.fromImage(qimg)
             self.preview_label.setText("")
             self.preview_label.setPixmap(pm)
-            self.preview_label.setFixedSize(pm.size())
+            if self.embedded:
+                viewport = self.preview_scroll.viewport().size()
+                self.preview_label.setFixedSize(
+                    max(pm.width(), viewport.width()),
+                    max(pm.height(), viewport.height()),
+                )
+            else:
+                self.preview_label.setFixedSize(pm.size())
         except Exception as e:
             self.preview_label.setPixmap(QPixmap())
             self.preview_label.setText(f"Failed to render preview:\n{e}")
@@ -1137,7 +1197,7 @@ class ClipsDialog(QDialog):
             if c.file_type == "PDF" and c.page is not None:
                 where = f"p.{c.page}"
             elif c.row_no is not None:
-                where = f"row.{c.row_no}"    
+                where = f"row.{c.row_no}"
             elif c.line_no is not None:
                 where = f"ln.{c.line_no}"
             preview = (c.selected_text or "").replace("\n", " ").strip()
@@ -1565,7 +1625,7 @@ class SearchWorker(QThread):
                             self._search_excel_file(fpath, hits, keyword_entries)
                     except Exception as e:
                         self.progress_text.emit(f"Failed to read sheet: {Path(fpath).name} — {e}")
-                        continue            
+                        continue
             # --- Non-PDF search ---
             if others:
                 if not KREUZBERG_AVAILABLE:
@@ -1732,7 +1792,7 @@ class KeywordFinderWindow(QMainWindow):
         self.cache = DiskCache(paths.cache_dir, enable=cfg.enable_cache, max_files=cfg.cache_max_files)
 
         self.setWindowTitle("Keyword Finder")
-        self.setMinimumSize(1200, 720)
+        self.setMinimumSize(1180, 720)
 
         self.files: List[str] = []
         self.keywords_text: str = ""
@@ -1740,8 +1800,10 @@ class KeywordFinderWindow(QMainWindow):
         self._view_rows: List[int] = []  # mapping from table row -> hit index (Hit view) or representative hit
         self.clips: List[Clip] = []
         self.worker: Optional[SearchWorker] = None
+        self.search_active = False
+        self.last_search_completed = False
 
-        self.preview = PreviewPopup(self, zoom_default=cfg.zoom_default)
+        self.preview = PreviewPopup(self, zoom_default=cfg.zoom_default, embedded=True)
         self.preview.request_save_clip.connect(self.save_current_selection_as_clip)
         self.preview.request_continue_reading.connect(self.open_selected_in_viewer)
         self.preview.request_prev_hit.connect(self.select_prev)
@@ -1757,66 +1819,174 @@ class KeywordFinderWindow(QMainWindow):
         root = QWidget()
         self.setCentralWidget(root)
         layout = QVBoxLayout(root)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(10)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
 
-        # top row
-        top = QHBoxLayout()
-        self.btn_files = QPushButton("Files…")
+        self.workspace_splitter = QSplitter(Qt.Horizontal)
+        self.workspace_splitter.setChildrenCollapsible(False)
+        layout.addWidget(self.workspace_splitter, 1)
+
+        # Persistent research setup panel
+        setup_panel = QWidget()
+        setup_panel.setMinimumWidth(250)
+        setup_panel.setMaximumWidth(360)
+        setup = QVBoxLayout(setup_panel)
+        setup.setContentsMargins(10, 10, 10, 10)
+        setup.setSpacing(10)
+
+        setup_title = QLabel("Research setup")
+        setup_title.setStyleSheet("font-size: 18px; font-weight: 600;")
+        setup.addWidget(setup_title)
+
+        files_group = QGroupBox("Documents")
+        files_layout = QVBoxLayout(files_group)
+        self.files_count_label = QLabel("0 selected")
+        files_layout.addWidget(self.files_count_label)
+        self.files_list = QListWidget()
+        self.files_list.setAccessibleName("Selected documents")
+        self.files_list.setMinimumHeight(110)
+        self.files_list.setSelectionMode(QAbstractItemView.NoSelection)
+        files_layout.addWidget(self.files_list, 1)
+        files_actions = QHBoxLayout()
+        self.btn_files = QPushButton("Choose documents…")
         self.btn_files.clicked.connect(self.manage_files)
-        self.btn_kw = QPushButton("Keywords…")
+        self.btn_clear_files = QPushButton("Clear")
+        self.btn_clear_files.clicked.connect(self.clear_files)
+        files_actions.addWidget(self.btn_files, 1)
+        files_actions.addWidget(self.btn_clear_files)
+        files_layout.addLayout(files_actions)
+        setup.addWidget(files_group, 1)
+
+        keywords_group = QGroupBox("Keywords")
+        keywords_layout = QVBoxLayout(keywords_group)
+        self.keywords_count_label = QLabel("0 added")
+        keywords_layout.addWidget(self.keywords_count_label)
+        self.keywords_list = QListWidget()
+        self.keywords_list.setAccessibleName("Search keywords")
+        self.keywords_list.setMinimumHeight(120)
+        self.keywords_list.setSelectionMode(QAbstractItemView.NoSelection)
+        keywords_layout.addWidget(self.keywords_list, 1)
+        keyword_actions = QHBoxLayout()
+        self.btn_kw = QPushButton("Edit keywords…")
         self.btn_kw.clicked.connect(self.manage_keywords)
+        self.btn_import_keywords = QPushButton("Import…")
+        self.btn_import_keywords.clicked.connect(self.import_keywords)
+        keyword_actions.addWidget(self.btn_kw, 1)
+        keyword_actions.addWidget(self.btn_import_keywords)
+        keywords_layout.addLayout(keyword_actions)
+        setup.addWidget(keywords_group, 1)
+
+        options_group = QGroupBox("Search options")
+        options_layout = QVBoxLayout(options_group)
+        self.search_options_label = QLabel()
+        self.search_options_label.setWordWrap(True)
+        options_layout.addWidget(self.search_options_label)
+        self.btn_edit_options = QPushButton("Edit options…")
+        self.btn_edit_options.clicked.connect(self.manage_keywords)
+        options_layout.addWidget(self.btn_edit_options)
+        setup.addWidget(options_group)
+
+        search_actions = QHBoxLayout()
         self.btn_run = QPushButton("Run search")
+        self.btn_run.setObjectName("primaryRunButton")
         self.btn_run.clicked.connect(self.run_search)
         self.btn_cancel = QPushButton("Cancel")
         self.btn_cancel.clicked.connect(self.cancel_search)
         self.btn_cancel.setEnabled(False)
-        self.btn_preview = QPushButton("Preview")
+        search_actions.addWidget(self.btn_run, 1)
+        search_actions.addWidget(self.btn_cancel)
+        setup.addLayout(search_actions)
+
+        self.status = QLabel("Ready.")
+        self.status.setWordWrap(True)
+        self.status.setAccessibleName("Search status")
+        setup.addWidget(self.status)
+        self.pbar = QProgressBar()
+        self.pbar.setRange(0, 1)
+        self.pbar.setValue(0)
+        self.pbar.setTextVisible(True)
+        self.pbar.setVisible(False)
+        setup.addWidget(self.pbar)
+        self.workspace_splitter.addWidget(setup_panel)
+
+        # Results workspace
+        results_panel = QWidget()
+        results_panel.setMinimumWidth(460)
+        results_layout = QVBoxLayout(results_panel)
+        results_layout.setContentsMargins(10, 10, 10, 10)
+        results_layout.setSpacing(8)
+
+        results_header = QHBoxLayout()
+        results_title = QLabel("Results")
+        results_title.setStyleSheet("font-size: 18px; font-weight: 600;")
+        self.results_count_label = QLabel("No search yet")
+        self.view_combo = QComboBox()
+        self.view_combo.setAccessibleName("Results grouping")
+        self.view_combo.addItem("Individual matches", "hits")
+        self.view_combo.addItem("Group by location", "pages")
+        self.view_combo.setCurrentIndex(1 if self.cfg.results_view == "pages" else 0)
+        self.view_combo.currentIndexChanged.connect(
+            lambda _index: self.set_results_view(self.view_combo.currentData())
+        )
+        self.btn_preview = QPushButton("Hide preview")
         self.btn_preview.clicked.connect(self.toggle_preview)
+        results_header.addWidget(results_title)
+        results_header.addWidget(self.results_count_label)
+        results_header.addStretch(1)
+        results_header.addWidget(self.view_combo)
+        results_header.addWidget(self.btn_preview)
+        results_layout.addLayout(results_header)
 
-        top.addWidget(self.btn_files)
-        top.addWidget(self.btn_kw)
-        top.addWidget(self.btn_run)
-        top.addWidget(self.btn_cancel)
-        top.addStretch(1)
-        top.addWidget(self.btn_preview)
-        layout.addLayout(top)
+        self.results_stack = QStackedWidget()
+        empty_page = QWidget()
+        empty_layout = QVBoxLayout(empty_page)
+        empty_layout.setContentsMargins(36, 36, 36, 36)
+        empty_layout.addStretch(1)
+        self.empty_title = QLabel("Choose documents to begin")
+        self.empty_title.setAlignment(Qt.AlignCenter)
+        self.empty_title.setStyleSheet("font-size: 20px; font-weight: 600;")
+        self.empty_body = QLabel("Add the files you want to search, then define the keywords that matter to your research question.")
+        self.empty_body.setAlignment(Qt.AlignCenter)
+        self.empty_body.setWordWrap(True)
+        self.empty_action = QPushButton("Choose documents…")
+        self.empty_action.clicked.connect(self._handle_empty_action)
+        empty_layout.addWidget(self.empty_title)
+        empty_layout.addWidget(self.empty_body)
+        empty_layout.addSpacing(8)
+        empty_layout.addWidget(self.empty_action, 0, Qt.AlignCenter)
+        empty_layout.addStretch(1)
+        self.results_stack.addWidget(empty_page)
 
-        # results
-        g = QGroupBox("Results")
-        gl = QVBoxLayout(g)
-        self.table = QTableWidget(0, 9)
-        self.table.setHorizontalHeaderLabels(["View", "Type", "File", "Keyword", "Detected", "Page", "Line", "Row", "Snippet"])
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(["Type", "Source", "Keyword", "Location", "Snippet"])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(8, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
         self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(34)
         self.table.setAlternatingRowColors(True)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.table.setWordWrap(False)
+        self.table.setAccessibleName("Search results")
         self.table.cellClicked.connect(self._on_row_clicked)
         self.table.cellDoubleClicked.connect(lambda r, c: self.open_selected_in_viewer())
-        gl.addWidget(self.table, 1)
-        layout.addWidget(g, 1)
+        self.results_stack.addWidget(self.table)
+        results_layout.addWidget(self.results_stack, 1)
+        self.workspace_splitter.addWidget(results_panel)
 
-        # status + progress
-        status_row = QHBoxLayout()
-        self.status = QLabel("Ready.")
-        self.status.setWordWrap(True)
-        self.pbar = QProgressBar()
-        self.pbar.setFixedWidth(260)
-        self.pbar.setRange(0, 1)
-        self.pbar.setValue(0)
-        status_row.addWidget(self.status, 1)
-        status_row.addWidget(self.pbar)
-        layout.addLayout(status_row)
+        # Inline preview keeps reading context next to the selected result.
+        self.workspace_splitter.addWidget(self.preview)
+        self.workspace_splitter.setStretchFactor(0, 0)
+        self.workspace_splitter.setStretchFactor(1, 2)
+        self.workspace_splitter.setStretchFactor(2, 1)
+        self.workspace_splitter.setSizes([280, 690, 470])
+
+        self._refresh_setup_panels()
+        self._refresh_empty_state()
 
     def _build_menus(self):
         mb = self.menuBar()
@@ -1908,16 +2078,118 @@ class KeywordFinderWindow(QMainWindow):
         m_tools.addAction(a_settings)
         m_tools.addAction(a_clear_cache)
 
+    def _refresh_setup_panels(self):
+        if not hasattr(self, "files_list"):
+            return
+
+        self.files_list.clear()
+        for file_path in self.files:
+            item = QListWidgetItem(Path(file_path).name)
+            item.setToolTip(file_path)
+            item.setData(Qt.UserRole, file_path)
+            self.files_list.addItem(item)
+        file_count = len(self.files)
+        self.files_count_label.setText(f"{file_count} selected" if file_count != 1 else "1 selected")
+        self.btn_clear_files.setEnabled(bool(self.files) and not self.search_active)
+
+        keywords = self._parse_keywords()
+        self.keywords_list.clear()
+        for keyword in keywords:
+            self.keywords_list.addItem(QListWidgetItem(keyword))
+        keyword_count = len(keywords)
+        self.keywords_count_label.setText(f"{keyword_count} added" if keyword_count != 1 else "1 added")
+
+        mode_labels = {"plain": "Plain match", "regex": "Regular expression", "fuzzy": "Fuzzy match"}
+        options = [mode_labels.get(self.cfg.search_mode, self.cfg.search_mode.title())]
+        options.append("Case sensitive" if self.cfg.case_sensitive else "Ignore case")
+        options.append("Whole word" if self.cfg.whole_word else "Partial words allowed")
+        if self.cfg.search_mode == "fuzzy":
+            options.append(f"Threshold {self.cfg.fuzzy_threshold:.2f}")
+        self.search_options_label.setText(" · ".join(options))
+
+        ready = bool(self.files and keywords)
+        self.btn_run.setEnabled(ready and not self.search_active)
+        self.btn_cancel.setEnabled(self.search_active)
+        self.btn_files.setEnabled(not self.search_active)
+        self.btn_kw.setEnabled(not self.search_active)
+        self.btn_import_keywords.setEnabled(not self.search_active)
+        self.btn_edit_options.setEnabled(not self.search_active)
+
+    def _refresh_empty_state(self):
+        if not hasattr(self, "results_stack"):
+            return
+        keywords = self._parse_keywords()
+        if self.hits:
+            self.results_stack.setCurrentWidget(self.table)
+            return
+
+        self.results_stack.setCurrentIndex(0)
+        if not self.files:
+            self.empty_title.setText("Choose documents to begin")
+            self.empty_body.setText(
+                "Add the PDFs, spreadsheets, presentations, or documents you want to search."
+            )
+            self.empty_action.setText("Choose documents…")
+            self.empty_action.setProperty("action_role", "files")
+            self.results_count_label.setText("No search yet")
+        elif not keywords:
+            self.empty_title.setText("Add keywords for your research question")
+            self.empty_body.setText(
+                "Enter one phrase per line. You can adjust case, whole-word, regex, and fuzzy matching at the same time."
+            )
+            self.empty_action.setText("Add keywords…")
+            self.empty_action.setProperty("action_role", "keywords")
+            self.results_count_label.setText("Ready for keywords")
+        elif self.last_search_completed:
+            self.empty_title.setText("No matches found")
+            self.empty_body.setText(
+                "Try broader wording, turn off whole-word matching, or review whether the selected documents contain searchable text."
+            )
+            self.empty_action.setText("Review keywords…")
+            self.empty_action.setProperty("action_role", "keywords")
+            self.results_count_label.setText("0 matches")
+        else:
+            self.empty_title.setText("Ready to search")
+            self.empty_body.setText(
+                f"Search {len(self.files)} document(s) for {len(keywords)} keyword(s). Results will appear here and open in the preview panel."
+            )
+            self.empty_action.setText("Run search")
+            self.empty_action.setProperty("action_role", "search")
+            self.results_count_label.setText("Ready")
+
+    def _handle_empty_action(self):
+        role = self.empty_action.property("action_role")
+        if role == "keywords":
+            self.manage_keywords()
+        elif role == "search":
+            self.run_search()
+        else:
+            self.manage_files()
+
+    @staticmethod
+    def _location_text(hit: Hit) -> str:
+        if hit.page is not None:
+            return f"Page {hit.page}"
+        if hit.row_no is not None:
+            return f"Row {hit.row_no}"
+        if hit.line_no is not None:
+            return f"Line {hit.line_no}"
+        return "—"
+
     # ----- status -----
     def _refresh_status(self, extra: str = ""):
-        cs = "ON" if self.cfg.case_sensitive else "OFF"
-        ww = "ON" if self.cfg.whole_word else "OFF"
-        mode = self.cfg.search_mode
-        view = self.cfg.results_view
-        msg = f"Files: {len(self.files)} | Keywords: {len(self._parse_keywords())} | Mode: {mode} | Case {cs} | Whole {ww} | View: {view}"
         if extra:
-            msg += f" — {extra}"
+            msg = extra
+        elif self.files and self._parse_keywords():
+            msg = "Ready to search."
+        elif self.files:
+            msg = "Add keywords to continue."
+        else:
+            msg = "Choose documents to begin."
         self.status.setText(msg)
+        self._refresh_setup_panels()
+        if not self.search_active:
+            self._refresh_empty_state()
 
     # ----- parsing -----
     def _parse_keywords(self) -> List[str]:
@@ -1945,6 +2217,10 @@ class KeywordFinderWindow(QMainWindow):
         dlg = FileManagerDialog(self, self.files, start_dir=self.cfg.last_dir)
         if dlg.exec() == QDialog.Accepted:
             self.files = dlg.get_files()
+            self.hits = []
+            self._view_rows = []
+            self.last_search_completed = False
+            self.table.setRowCount(0)
             # update last dir
             if self.files:
                 self.cfg.last_dir = str(Path(self.files[-1]).parent)
@@ -1955,6 +2231,7 @@ class KeywordFinderWindow(QMainWindow):
         self.files = []
         self.hits = []
         self._view_rows = []
+        self.last_search_completed = False
         self.table.setRowCount(0)
         self._refresh_status("Files cleared")
 
@@ -1963,6 +2240,10 @@ class KeywordFinderWindow(QMainWindow):
         if dlg.exec() == QDialog.Accepted:
             self.keywords_text = dlg.get_text()
             dlg.apply_to_config(self.cfg)
+            self.hits = []
+            self._view_rows = []
+            self.last_search_completed = False
+            self.table.setRowCount(0)
             save_config(self.paths.config_path, self.cfg)
             self._refresh_status()
 
@@ -1983,6 +2264,10 @@ class KeywordFinderWindow(QMainWindow):
                 self.keywords_text = "\n".join(rows)
             else:
                 self.keywords_text = p.read_text(encoding="utf-8")
+            self.hits = []
+            self._view_rows = []
+            self.last_search_completed = False
+            self.table.setRowCount(0)
             self._refresh_status("Keywords imported")
         except Exception as e:
             QMessageBox.critical(self, "Import failed", str(e))
@@ -2045,10 +2330,12 @@ class KeywordFinderWindow(QMainWindow):
         self.table.setRowCount(0)
         self.hits = []
         self._view_rows = []
-        self.btn_run.setEnabled(False)
-        self.btn_cancel.setEnabled(True)
+        self.search_active = True
+        self.last_search_completed = False
+        self.results_stack.setCurrentWidget(self.table)
         self.pbar.setRange(0, 1)
         self.pbar.setValue(0)
+        self.pbar.setVisible(True)
         self._refresh_status("Starting…")
 
         self.worker = SearchWorker(self.files, keywords, self.cfg, self.cache)
@@ -2066,19 +2353,20 @@ class KeywordFinderWindow(QMainWindow):
             self._refresh_status("Cancelling…")
 
     def _on_search_cancelled(self):
-        self.btn_run.setEnabled(True)
-        self.btn_cancel.setEnabled(False)
+        self.search_active = False
+        self.pbar.setVisible(False)
         self._refresh_status("Cancelled")
 
     def _on_search_err(self, msg: str):
-        self.btn_run.setEnabled(True)
-        self.btn_cancel.setEnabled(False)
+        self.search_active = False
+        self.pbar.setVisible(False)
         QMessageBox.critical(self, "Error", msg)
         self._refresh_status("Error")
 
     def _on_search_ok(self, hits: List[Hit]):
-        self.btn_run.setEnabled(True)
-        self.btn_cancel.setEnabled(False)
+        self.search_active = False
+        self.last_search_completed = True
+        self.pbar.setVisible(False)
         self.hits = hits
         self.populate_table()
         if hits:
@@ -2091,6 +2379,11 @@ class KeywordFinderWindow(QMainWindow):
         self.cfg.results_view = which
         self.a_view_hits.setChecked(which == "hits")
         self.a_view_pages.setChecked(which == "pages")
+        desired_index = self.view_combo.findData(which)
+        if desired_index >= 0 and self.view_combo.currentIndex() != desired_index:
+            self.view_combo.blockSignals(True)
+            self.view_combo.setCurrentIndex(desired_index)
+            self.view_combo.blockSignals(False)
         save_config(self.paths.config_path, self.cfg)
         self.populate_table()
 
@@ -2119,33 +2412,45 @@ class KeywordFinderWindow(QMainWindow):
                 fpath, ftype, page, line, row_no = key
                 rep = self.hits[idxs[0]]
                 keywords = sorted({self.hits[i].keyword for i in idxs})
-                detected = rep.detected_word
                 snippet = rep.snippet
 
-                self.table.setItem(r, 0, QTableWidgetItem("PAGE"))
-                self.table.setItem(r, 1, QTableWidgetItem(ftype))
-                self.table.setItem(r, 2, QTableWidgetItem(Path(fpath).name))
-                self.table.setItem(r, 3, QTableWidgetItem(", ".join(keywords)[:120]))
-                self.table.setItem(r, 4, QTableWidgetItem(detected))
-                self.table.setItem(r, 5, QTableWidgetItem("" if page is None else str(page)))
-                self.table.setItem(r, 6, QTableWidgetItem("" if line is None else str(line)))
-                self.table.setItem(r, 7, QTableWidgetItem("" if row_no is None else str(row_no)))
-                self.table.setItem(r, 8, QTableWidgetItem(f"[{len(idxs)} hits] {snippet}"))
+                type_item = QTableWidgetItem(ftype)
+                source_item = QTableWidgetItem(Path(fpath).name)
+                source_item.setToolTip(fpath)
+                keyword_item = QTableWidgetItem(", ".join(keywords)[:120])
+                location_item = QTableWidgetItem(self._location_text(rep))
+                snippet_item = QTableWidgetItem(f"{len(idxs)} matches · {snippet}")
+                snippet_item.setToolTip(f"Detected: {rep.detected_word}\n\n{rep.context or snippet}")
+                self.table.setItem(r, 0, type_item)
+                self.table.setItem(r, 1, source_item)
+                self.table.setItem(r, 2, keyword_item)
+                self.table.setItem(r, 3, location_item)
+                self.table.setItem(r, 4, snippet_item)
                 self._view_rows.append(idxs[0])
         else:
             self.table.setRowCount(len(self.hits))
             for i, h in enumerate(self.hits):
-                self.table.setItem(i, 0, QTableWidgetItem("HIT"))
-                self.table.setItem(i, 1, QTableWidgetItem(h.file_type))
-                self.table.setItem(i, 2, QTableWidgetItem(Path(h.file_path).name))
-                self.table.setItem(i, 3, QTableWidgetItem(h.keyword))
-                self.table.setItem(i, 4, QTableWidgetItem(h.detected_word))
-                self.table.setItem(i, 5, QTableWidgetItem("" if h.page is None else str(h.page)))
-                self.table.setItem(i, 6, QTableWidgetItem("" if h.line_no is None else str(h.line_no)))
-                self.table.setItem(i, 7, QTableWidgetItem("" if h.row_no is None else str(h.row_no)))
-                self.table.setItem(i, 8, QTableWidgetItem(h.snippet))
+                type_item = QTableWidgetItem(h.file_type)
+                source_item = QTableWidgetItem(Path(h.file_path).name)
+                source_item.setToolTip(h.file_path)
+                keyword_item = QTableWidgetItem(h.keyword)
+                location_item = QTableWidgetItem(self._location_text(h))
+                snippet_item = QTableWidgetItem(h.snippet)
+                snippet_item.setToolTip(f"Detected: {h.detected_word}\n\n{h.context or h.snippet}")
+                self.table.setItem(i, 0, type_item)
+                self.table.setItem(i, 1, source_item)
+                self.table.setItem(i, 2, keyword_item)
+                self.table.setItem(i, 3, location_item)
+                self.table.setItem(i, 4, snippet_item)
                 self._view_rows.append(i)
 
+        self.results_stack.setCurrentWidget(self.table)
+        row_count = self.table.rowCount()
+        self.results_count_label.setText(
+            f"{row_count} location(s) · {len(self.hits)} matches"
+            if self.cfg.results_view == "pages"
+            else f"{len(self.hits)} matches"
+        )
         self._refresh_status(f"Done. {len(self.hits)} hit(s).")
         self.setWindowTitle(f"Keyword Finder — {len(self.hits)} hit(s)")
 
@@ -2190,8 +2495,14 @@ class KeywordFinderWindow(QMainWindow):
     def toggle_preview(self):
         if self.preview.isVisible():
             self.preview.hide()
+            self.btn_preview.setText("Show preview")
         else:
             self.preview.show()
+            self.btn_preview.setText("Hide preview")
+            sizes = self.workspace_splitter.sizes()
+            if len(sizes) == 3 and sizes[2] < 120:
+                total = sum(sizes)
+                self.workspace_splitter.setSizes([max(250, sizes[0]), max(420, int(total * 0.48)), max(360, int(total * 0.32))])
             idx = self._current_hit_index()
             if idx is not None:
                 self.preview.show_hit(self.hits[idx])
@@ -2237,11 +2548,11 @@ class KeywordFinderWindow(QMainWindow):
             QMessageBox.information(self, "Tip", "Select a result row first.")
             return
         if not self.preview.isVisible():
-            QMessageBox.information(self, "Tip", "Open the preview first: Preview → Show/Hide preview")
+            QMessageBox.information(self, "Tip", "Show the preview panel first.")
             return
         selected = self.preview.get_selected_text()
         if not selected:
-            QMessageBox.information(self, "Tip", "Select some text in the Preview window first.")
+            QMessageBox.information(self, "Tip", "Select some text in the Preview panel first.")
             return
         hit = self.hits[idx]
         stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
